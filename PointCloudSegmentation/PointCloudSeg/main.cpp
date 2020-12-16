@@ -9,6 +9,12 @@
 #include <pcl/point_types.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/io/pcd_io.h>
+#include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/ModelCoefficients.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/segmentation/sac_segmentation.h>
 
 //VTK Includes
 #include <vtkSmartPointer.h>
@@ -22,6 +28,27 @@
 typedef pcl::PointXYZ Point;
 typedef pcl::PointCloud<Point> PointCloud;
 
+//pcl::PointCloud<pcl::PointXYZ> vtkImageToPointCloud(vtkImageData *depthImg)
+//{
+//  uint16_t *data = reinterpret_cast<uint16_t *>(depthImg->GetScalarPointer());
+//  int *dimensions = depthImg->GetDimensions();
+
+//  pcl::PointCloud<pcl::PointXYZ> pointCloud;
+
+//  for (int x = 0; x < dimensions[0]; ++x)
+//  {
+//    for (int y=0; y < dimensions[1]; ++y)
+//    {
+//      uint16_t depthPixel = data[ y * dimensions[0] + x];
+//      pointCloud.push_back(pcl::PointXYZ(x, y, depthPixel));
+//    }
+//  }
+
+//  //tmp
+//  pcl::io::savePCDFile("test.pcd", pointCloud);
+//  return pointCloud;
+//}
+
 void applyMask(vtkImageData* depthImg, vtkImageData *mask)
 {
   vtkSmartPointer<vtkImageMask> maskFilter =
@@ -31,23 +58,6 @@ void applyMask(vtkImageData* depthImg, vtkImageData *mask)
   maskFilter->SetInput2Data(mask);
   maskFilter->Update();
   depthImg->DeepCopy(maskFilter->GetOutput());
-
-
-//  vtkImageToPointCloud(depthImg);
-//  pcl::transformPointCloud(*cloud, *cloud, img2pc.inverse());
-
-//  // It is necessary to remove the points with Z value to 0
-//  pcl::PassThrough<Point> pass;
-//  pass.setInputCloud(cloud);
-//  pass.setFilterFieldName("z");
-//  pass.setFilterLimits(0.0, 0.0);
-//  pass.setNegative(true);
-//  pass.filter(*cloud);
-
-//  pcl::transformPointCloud(*cloud, *cloud, img2pc);
-
-//  // Tmp
-//  pcl::io::savePCDFile("maskedPCD.pcd", *cloud);
 }
 
 vtkImageData * loadMask(const char* filename)
@@ -67,12 +77,10 @@ int main(int argc, char *argv[])
 {
     QCoreApplication a(argc, argv);
 
-    PointCloud::Ptr cloud(new PointCloud());
-
     vtkSmartPointer<vtkPNGReader> reader =
         vtkSmartPointer<vtkPNGReader>::New();
 
-    const char* filename = "/home/abian/Workspace/Thesis/Segmentation/DataTest/Images/ADM001/ADM001_Depth_T0.png";
+    const char* filename = "../../../DataTest/Images/ADM001/ADM001_Depth_T0.png";
     reader->SetFileName(filename);
     reader->Update();
 
@@ -90,7 +98,7 @@ int main(int argc, char *argv[])
     depthImg->DeepCopy(vtkResize->GetOutput());
 
     // Load mask
-    const char* mask_filename = "/home/abian/Workspace/Thesis/Segmentation/TernausNet/result/ADM001/ADM001_RGB_T0.png";
+    const char* mask_filename = "../../../TernausNet/result/ADM001/ADM001_RGB_T0.png";
     vtkSmartPointer<vtkPNGReader> mask_reader =
         vtkSmartPointer<vtkPNGReader>::New();
     mask_reader->SetFileName(mask_filename);
@@ -103,16 +111,6 @@ int main(int argc, char *argv[])
     std::cout << dimensions[1] << std::endl;
     std::cout << dimensions[2] << std::endl;
 
-//    for(int x = 0; x < dimensions[0]; x++)
-//    {
-//      for(int y = 0; y < dimensions[1]; y++)
-//      {
-//        uint8_t* pixel = reinterpret_cast<uint8_t*>(mask->GetScalarPointer(x,y,0));
-//        if (*pixel > 0)
-//          std::cout << *pixel << std::endl;
-//      }
-//    }
-
     // Apply mask
     applyMask(depthImg, mask);
 
@@ -124,48 +122,95 @@ int main(int argc, char *argv[])
     writer->SetInputData(depthImg);
     writer->Write();
 
+    // Generate PointCloud
+    PointCloud::Ptr cloud(new PointCloud());
 
+    uint16_t *depthData = reinterpret_cast<uint16_t *>(depthImg->GetScalarPointer());
+    size_t currentRow = 0;
 
-//    int *dimensions = img->GetDimensions();
-//    uint16_t *depthData = reinterpret_cast<uint16_t *>(img->GetScalarPointer());
-//    size_t currentRow = 0;
+    cloud->width = dimensions[0];
+    cloud->height = dimensions[1];
+    cloud->resize(cloud->width * cloud->height);
 
-//    std::cout << dimensions[0] << std::endl;
-//    std::cout << dimensions[1] << std::endl;
-//    cloud->width = dimensions[0];
-//    cloud->height = dimensions[1];
-//    cloud->resize(cloud->width * cloud->height);
+    // Lambda function (generatePoint)
+    std::function<Point(const size_t &wIdx)> generatePoint =
+          [ &depthData, &dimensions, &currentRow ](const size_t &wIdx)
+    {
+      return Point(wIdx, currentRow, depthData[currentRow * dimensions[0] + wIdx]);
+    };
 
+    std::vector<int> pixelsIdx_w(dimensions[0]);
+    std::iota(pixelsIdx_w.begin(), pixelsIdx_w.end(), 0);
 
-//    // Lambda function (generatePoint)
-//    std::function<Point(const size_t &wIdx)> generatePoint =
-//          [ &depthData, &dimensions, &currentRow ](const size_t &wIdx)
-//    {
-//      return Point(wIdx, currentRow, depthData[currentRow * dimensions[0] + wIdx]);
-//    };
+    for (; currentRow < static_cast<size_t>(dimensions[1]); ++currentRow)
+    {
+      QFuture<Point> mapper = QtConcurrent::mapped(pixelsIdx_w.begin(), pixelsIdx_w.end(), generatePoint);
+      QVector<Point> results = mapper.results().toVector();
 
-//    std::vector<int> pixelsIdx_w(dimensions[0]);
-//    std::iota(pixelsIdx_w.begin(), pixelsIdx_w.end(), 0);
+      Point *pcData = &(cloud->points.data()[currentRow*dimensions[0]]);
+      std::copy(results.begin(), results.end(), pcData);
+    }
 
-//    for (; currentRow < static_cast<size_t>(dimensions[1]); ++currentRow)
-//    {
-//      QFuture<Point> mapper = QtConcurrent::mapped(pixelsIdx_w.begin(), pixelsIdx_w.end(), generatePoint);
-//      QVector<Point> results = mapper.results().toVector();
+    // Pass filter (removing 0 values)
+    pcl::io::savePCDFile("depth_image.pcd", *cloud);
 
-//      Point *pcData = &(cloud->points.data()[currentRow*dimensions[0]]);
-//      std::copy(results.begin(), results.end(), pcData);
-//    }
+    pcl::PassThrough<Point> pass;
+    pass.setInputCloud(cloud);
+    pass.setFilterFieldName("z");
+    pass.setFilterLimits(0.0, 0.0);
+    pass.setNegative(true);
+    pass.filter(*cloud);
 
-//    pcl::io::savePCDFile("depth_image.pcd", *cloud);
+    pcl::io::savePCDFile("pass_filtered.pcd", *cloud);
 
-//    pcl::PassThrough<Point> pass;
-//    pass.setInputCloud(cloud);
-//    pass.setFilterFieldName("z");
-//    pass.setFilterLimits(0.0, 0.0);
-//    pass.setNegative(true);
-//    pass.filter(*cloud);
+    // Statistical Filter
+    std::vector<int> inlierIndices;
 
-//    pcl::io::savePCDFile("pass_filtered.pcd", *cloud);
+    pcl::StatisticalOutlierRemoval<Point> sor;
+    sor.setInputCloud (cloud);
+    sor.setMeanK(50);
+    sor.setStddevMulThresh(.001);
+    sor.filter(inlierIndices);
+
+    pcl::IndicesPtr indicesPtr(new std::vector<int>(inlierIndices));
+
+    // Create the filtering object
+    pcl::ExtractIndices<Point> extract;
+    // Extract the inliers
+    extract.setInputCloud (cloud);
+    extract.setIndices (indicesPtr);
+    extract.setNegative (false);
+    extract.filter (*cloud);
+
+    pcl::io::savePCDFile("statistical_filtered.pcd", *cloud);
+
+    // Plane Segmentation, RANSAC Optimizer
+    pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients);
+    pcl::PointIndices::Ptr inliers (new pcl::PointIndices);
+
+    // Create the segmentation object
+    pcl::SACSegmentation<Point> seg;
+
+    // Optional
+    seg.setOptimizeCoefficients (true);
+
+    // Mandatory
+    seg.setModelType (pcl::SACMODEL_PLANE);
+    seg.setMethodType (pcl::SAC_RANSAC);
+    seg.setDistanceThreshold (50);
+    seg.setMaxIterations (5000);
+
+    seg.setInputCloud (cloud);
+    seg.segment (*inliers, *coefficients);
+
+    pcl::IndicesPtr indicesPtr2(new std::vector<int>(inliers->indices));
+
+    extract.setInputCloud (cloud);
+    extract.setIndices (indicesPtr2);
+    extract.setNegative (false);
+    extract.filter (*cloud);
+
+    pcl::io::savePCDFile("plane_segmented.pcd", *cloud);
 
     return a.exec();
 }
