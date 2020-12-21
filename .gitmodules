@@ -1,3 +1,6 @@
 [submodule "Deepgaze"]
 	path = Deepgaze
 	url = git@github.com:mpatacchiola/deepgaze.git
+[submodule "3rdParty/Augmentor"]
+	path = 3rdParty/Augmentor
+	url = https://github.com/mdbloice/Augmentor.git
