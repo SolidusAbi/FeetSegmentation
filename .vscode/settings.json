@@ -1,3 +1,4 @@
 {
-    "python.pythonPath": "/home/abian/Workspace/Anaconda/Miniconda/envs/DeepLearning/bin/python"
+    "python.pythonPath": "/home/abian/Workspace/Anaconda/Miniconda/envs/ImageProcessing/bin/python",
+    "jupyter.jupyterServerType": "local"
 }
