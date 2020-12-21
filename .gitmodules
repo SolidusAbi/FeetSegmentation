@@ -1,0 +1,3 @@
+[submodule "Deepgaze"]
+	path = Deepgaze
+	url = git@github.com:mpatacchiola/deepgaze.git
